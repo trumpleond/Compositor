@@ -188,7 +188,7 @@ private:
                 origin_.x + imageWidth_ * zoom_,
                 origin_.y + imageHeight_ * zoom_);
             renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f,
-                D2D1_INTERPOLATION_MODE_LINEAR);
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         } else {
             renderTarget_->DrawTextW(
                 L"Ctrl+O 打开图片\n\n左键绘制 · 滚轮缩放 · F 适应窗口\nCtrl+S 保存 PNG",
