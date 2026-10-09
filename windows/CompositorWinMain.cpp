@@ -1,5 +1,9 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <commdlg.h>
 #include <d2d1.h>
@@ -37,7 +41,7 @@ public:
             return HRESULT_FROM_WIN32(GetLastError());
         }
 
-        HRESULT result = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_);
+        HRESULT result = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory_.GetAddressOf());
         if (FAILED(result)) return result;
 
         result = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
@@ -184,7 +188,7 @@ private:
                 origin_.x + imageWidth_ * zoom_,
                 origin_.y + imageHeight_ * zoom_);
             renderTarget_->DrawBitmap(bitmap_.Get(), destination, 1.0f,
-                                      D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
+                D2D1_INTERPOLATION_MODE_LINEAR);
         } else {
             renderTarget_->DrawTextW(
                 L"Ctrl+O 打开图片\n\n左键绘制 · 滚轮缩放 · F 适应窗口\nCtrl+S 保存 PNG",
