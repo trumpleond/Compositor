@@ -130,11 +130,11 @@ int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, cons
     float gamma = exp2f(p->density * 1.5f);
     float contrast = p->contrast >= 0 ? 1.0f / (1.0f - 0.95f * p->contrast) : 1.0f + p->contrast;
     #pragma omp parallel for if(height > 64)
-    for (size_t y = 0; y < height; ++y) {
-            const uint8_t *row = rgba + y * stride;
+    for (long long y = 0; y < (long long)height; ++y) {
+            const uint8_t *row = rgba + (size_t)y * stride;
             for (size_t x = 0; x < width; ++x) {
                 const uint8_t *px = row + x * 4;
-                size_t at = y * width + x;
+                size_t at = (size_t)y * width + x;
                 alpha[at] = px[3];
                 float r = 0, g = 0, b = 0;
                 if (px[3]) {
@@ -349,9 +349,9 @@ void dither_dots(uint8_t *rgba, size_t width, size_t height, size_t stride, int 
 
 void dither_glow(uint8_t *rgba, const uint8_t *glow, size_t width, size_t height, size_t stride, float amount) {
     #pragma omp parallel for if(height > 64)
-    for (size_t y = 0; y < height; ++y) {
-            uint8_t *row = rgba + y * stride;
-            const uint8_t *light = glow + y * stride;
+    for (long long y = 0; y < (long long)height; ++y) {
+            uint8_t *row = rgba + (size_t)y * stride;
+            const uint8_t *light = glow + (size_t)y * stride;
             for (size_t x = 0; x < width * 4; x += 4) {
                 float a = row[x + 3];
                 for (int c = 0; c < 3; ++c) {
@@ -371,15 +371,15 @@ static inline float hash_noise(size_t x, size_t y, uint32_t draw) {
 
 void dither_quantize16(const uint16_t *wide, uint8_t *rgba, size_t width, size_t height, size_t stride) {
     #pragma omp parallel for if(height > 64)
-    for (size_t y = 0; y < height; ++y) {
-            uint8_t *out = rgba + y * stride;
-            const uint16_t *in = wide + y * width * 4;
+    for (long long y = 0; y < (long long)height; ++y) {
+            uint8_t *out = rgba + (size_t)y * stride;
+            const uint16_t *in = wide + (size_t)y * width * 4;
             for (size_t x = 0; x < width; ++x) {
                 const uint16_t *p = in + x * 4;
                 long alpha = lroundf((float)p[3] * (255.0f / 65535.0f));
                 for (uint32_t c = 0; c < 3; ++c) {
                     // Two uniform draws added: noise that's strongest at zero and gone past one step.
-                    float value = (float)p[c] * (255.0f / 65535.0f) + hash_noise(x, y, c) + hash_noise(x, y, c + 3) - 1.0f;
+                    float value = (float)p[c] * (255.0f / 65535.0f) + hash_noise(x, (size_t)y, c) + hash_noise(x, (size_t)y, c + 3) - 1.0f;
                     long rounded = lroundf(value);
                     // Premultiplied: the noise mustn't lift a color past its own alpha.
                     out[x * 4 + c] = (uint8_t)(rounded < 0 ? 0 : rounded > alpha ? alpha : rounded);

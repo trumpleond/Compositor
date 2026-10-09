@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 enum { OUTSIDE = 0, RING = 1, HOLE = 2 };
 
 void heal_coverage_bounds(const uint8_t *gray, size_t width, size_t height, size_t stride, long bounds[4]) {
