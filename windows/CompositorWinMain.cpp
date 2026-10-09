@@ -6,15 +6,22 @@
 #endif
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wincodec.h>
 #include <windowsx.h>
 #include <wrl/client.h>
 
+extern "C" {
+#include "AdjustPixels.h"
+#include "DitherPixels.h"
+}
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -24,6 +31,26 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"CompositorWindowsWindow";
 constexpr wchar_t kWindowTitle[] = L"Compositor — Windows";
+constexpr int kToolbarHeight = 54;
+
+enum CommandId : UINT {
+    CommandOpen = 1001,
+    CommandSave,
+    CommandSaveAs,
+    CommandExit,
+    CommandUndo,
+    CommandRedo,
+    CommandReset,
+    CommandGrayscale,
+    CommandInvert,
+    CommandExposureUp,
+    CommandExposureDown,
+    CommandDither,
+    CommandBrush,
+    CommandEraser,
+    CommandFit,
+    CommandAbout
+};
 
 class CompositorWindow {
 public:
@@ -67,6 +94,8 @@ public:
             nullptr, nullptr, instance, this);
         if (!hwnd_) return HRESULT_FROM_WIN32(GetLastError());
 
+        createMenu();
+        DragAcceptFiles(hwnd_, TRUE);
         ShowWindow(hwnd_, SW_SHOW);
         UpdateWindow(hwnd_);
         return S_OK;
@@ -82,6 +111,151 @@ public:
     }
 
 private:
+    enum class Tool { Brush, Eraser };
+
+    void createMenu() {
+        HMENU menu = CreateMenu();
+        HMENU file = CreatePopupMenu();
+        HMENU edit = CreatePopupMenu();
+        HMENU image = CreatePopupMenu();
+        HMENU view = CreatePopupMenu();
+        AppendMenuW(file, MF_STRING, CommandOpen, L"打开图片\tCtrl+O");
+        AppendMenuW(file, MF_STRING, CommandSave, L"保存\tCtrl+S");
+        AppendMenuW(file, MF_STRING, CommandSaveAs, L"另存为...");
+        AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(file, MF_STRING, CommandExit, L"退出");
+        AppendMenuW(edit, MF_STRING, CommandUndo, L"撤销\tCtrl+Z");
+        AppendMenuW(edit, MF_STRING, CommandRedo, L"重做\tCtrl+Y");
+        AppendMenuW(edit, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(edit, MF_STRING, CommandBrush, L"画笔\tB");
+        AppendMenuW(edit, MF_STRING, CommandEraser, L"橡皮擦\tE");
+        AppendMenuW(image, MF_STRING, CommandGrayscale, L"转为灰度");
+        AppendMenuW(image, MF_STRING, CommandInvert, L"反相");
+        AppendMenuW(image, MF_STRING, CommandExposureUp, L"提高曝光");
+        AppendMenuW(image, MF_STRING, CommandExposureDown, L"降低曝光");
+        AppendMenuW(image, MF_STRING, CommandDither, L"抖动");
+        AppendMenuW(view, MF_STRING, CommandFit, L"适应窗口\tF");
+        AppendMenuW(view, MF_STRING, CommandReset, L"重置视图");
+        AppendMenuW(view, MF_STRING, CommandAbout, L"关于 Compositor");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"文件");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(edit), L"编辑");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(image), L"图像");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"视图");
+        SetMenu(hwnd_, menu);
+    }
+
+    void handleCommand(UINT command) {
+        switch (command) {
+        case CommandOpen: openImage(); break;
+        case CommandSave: saveCurrent(); break;
+        case CommandSaveAs: saveImage(); break;
+        case CommandExit: DestroyWindow(hwnd_); break;
+        case CommandUndo: undo(); break;
+        case CommandRedo: redo(); break;
+        case CommandReset: resetView(); InvalidateRect(hwnd_, nullptr, FALSE); break;
+        case CommandGrayscale: applyGrayscale(); break;
+        case CommandInvert: applyInvert(); break;
+        case CommandExposureUp: applyExposure(1.25f); break;
+        case CommandExposureDown: applyExposure(0.8f); break;
+        case CommandDither: applyDither(); break;
+        case CommandBrush: tool_ = Tool::Brush; InvalidateRect(hwnd_, nullptr, FALSE); break;
+        case CommandEraser: tool_ = Tool::Eraser; InvalidateRect(hwnd_, nullptr, FALSE); break;
+        case CommandFit: resetView(); InvalidateRect(hwnd_, nullptr, FALSE); break;
+        case CommandAbout:
+            MessageBoxW(hwnd_, L"Compositor Windows\n原生 Win32 + Direct2D 版本", L"关于", MB_OK | MB_ICONINFORMATION);
+            break;
+        default: break;
+        }
+    }
+
+    void resetHistory() {
+        history_.clear();
+        history_.push_back(pixels_);
+        historyIndex_ = 0;
+    }
+
+    void beginEdit() {
+        if (!imageLoaded_) return;
+        if (historyIndex_ + 1 < history_.size()) history_.erase(history_.begin() + historyIndex_ + 1, history_.end());
+    }
+
+    void commitEdit() {
+        if (!imageLoaded_ || history_.empty() || history_.back() == pixels_) return;
+        history_.push_back(pixels_);
+        historyIndex_ = history_.size() - 1;
+        if (history_.size() > 32) {
+            history_.erase(history_.begin());
+            --historyIndex_;
+        }
+    }
+
+    void undo() {
+        if (historyIndex_ == 0 || history_.empty()) return;
+        pixels_ = history_[--historyIndex_];
+        updateBitmap();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    void redo() {
+        if (historyIndex_ + 1 >= history_.size()) return;
+        pixels_ = history_[++historyIndex_];
+        updateBitmap();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    void applyGrayscale() {
+        if (!imageLoaded_) return;
+        beginEdit();
+        for (size_t i = 0; i < pixels_.size(); i += 4) {
+            const uint8_t gray = static_cast<uint8_t>((54u * pixels_[i + 2] + 183u * pixels_[i + 1] + 19u * pixels_[i] + 128u) / 256u);
+            pixels_[i] = pixels_[i + 1] = pixels_[i + 2] = gray;
+        }
+        commitEdit();
+        updateBitmap();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    void applyInvert() {
+        if (!imageLoaded_) return;
+        beginEdit();
+        for (size_t i = 0; i < pixels_.size(); i += 4)
+            for (int c = 0; c < 3; ++c) pixels_[i + c] = pixels_[i + 3] - pixels_[i + c];
+        commitEdit();
+        updateBitmap();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    void applyExposure(float factor) {
+        if (!imageLoaded_) return;
+        beginEdit();
+        for (size_t i = 0; i < pixels_.size(); i += 4) {
+            for (int c = 0; c < 3; ++c) {
+                const int value = static_cast<int>(std::lround(pixels_[i + c] * factor));
+                pixels_[i + c] = static_cast<uint8_t>(std::clamp(value, 0, static_cast<int>(pixels_[i + 3])));
+            }
+        }
+        commitEdit();
+        updateBitmap();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    void applyDither() {
+        if (!imageLoaded_) return;
+        beginEdit();
+        DitherParams params{};
+        params.style = DITHER_BAYER_8;
+        params.levels = 4;
+        params.contrast = 0.0f;
+        params.cell = 6;
+        params.originalColors = 1;
+        params.dark[0] = params.dark[1] = params.dark[2] = 0;
+        params.light[0] = params.light[1] = params.light[2] = 255;
+        dither_apply(pixels_.data(), imageWidth_, imageHeight_, imageWidth_ * 4, &params);
+        commitEdit();
+        updateBitmap();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         auto *window = reinterpret_cast<CompositorWindow *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) {
@@ -103,6 +277,7 @@ private:
             if (renderTarget_) {
                 renderTarget_->Resize(D2D1::SizeU(LOWORD(lParam), HIWORD(lParam)));
             }
+            if (imageLoaded_) resetView();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         case WM_PAINT:
@@ -116,21 +291,58 @@ private:
                 return 0;
             }
             if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && wParam == 'S') {
-                saveImage();
+                saveCurrent();
+                return 0;
+            }
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && wParam == 'Z') {
+                undo();
+                return 0;
+            }
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && wParam == 'Y') {
+                redo();
                 return 0;
             }
             if (wParam == 'F') {
                 resetView();
                 return 0;
             }
+            if (wParam == 'B') {
+                tool_ = Tool::Brush;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            if (wParam == 'E') {
+                tool_ = Tool::Eraser;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            if (wParam == VK_OEM_4 || wParam == VK_OEM_6) {
+                brushRadius_ = std::clamp(brushRadius_ + (wParam == VK_OEM_6 ? 2 : -2), 1, 200);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
             return 0;
+        case WM_COMMAND:
+            handleCommand(LOWORD(wParam));
+            return 0;
+        case WM_DROPFILES: {
+            HDROP drop = reinterpret_cast<HDROP>(wParam);
+            wchar_t path[MAX_PATH]{};
+            if (DragQueryFileW(drop, 0, path, MAX_PATH)) loadImage(path);
+            DragFinish(drop);
+            return 0;
+        }
         case WM_LBUTTONDOWN:
             SetCapture(hwnd_);
             lastMouse_ = pointFromLParam(lParam);
-            if (imageLoaded_) paintBrush(lastMouse_);
+            if (imageLoaded_ && lastMouse_.y >= kToolbarHeight) {
+                beginEdit();
+                paintBrush(lastMouse_);
+            }
             return 0;
         case WM_LBUTTONUP:
             ReleaseCapture();
+            commitEdit();
             return 0;
         case WM_MOUSEMOVE:
             if (wParam & MK_LBUTTON) {
@@ -169,6 +381,9 @@ private:
             D2D1::HwndRenderTargetProperties(hwnd_, size), &renderTarget_);
         if (renderTarget_) {
             renderTarget_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &brush_);
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.15f), &toolbarBrush_);
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.85f), &accentBrush_);
+            renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.62f, 0.65f, 0.70f), &mutedBrush_);
         }
     }
 
@@ -182,6 +397,16 @@ private:
 
         renderTarget_->BeginDraw();
         renderTarget_->Clear(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f));
+        if (toolbarBrush_) {
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            renderTarget_->FillRectangle(D2D1::RectF(0, 0, static_cast<float>(client.right), kToolbarHeight), toolbarBrush_.Get());
+            const std::wstring toolbar = imageLoaded_
+                ? L"文件  编辑  图像  视图     工具: " + std::wstring(tool_ == Tool::Brush ? L"画笔" : L"橡皮擦")
+                : L"文件  编辑  图像  视图     Ctrl+O 打开图片";
+            renderTarget_->DrawTextW(toolbar.c_str(), static_cast<UINT32>(toolbar.size()), textFormat_.Get(),
+                                     D2D1::RectF(20, 14, 900, 46), brush_.Get());
+        }
         if (bitmap_) {
             const auto destination = D2D1::RectF(
                 origin_.x, origin_.y,
@@ -191,8 +416,8 @@ private:
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         } else {
             renderTarget_->DrawTextW(
-                L"Ctrl+O 打开图片\n\n左键绘制 · 滚轮缩放 · F 适应窗口\nCtrl+S 保存 PNG",
-                36, textFormat_.Get(), D2D1::RectF(48, 48, 640, 220), brush_.Get());
+                L"Ctrl+O 打开图片\n\n拖入图片也可以打开\n左键绘制 · 滚轮缩放 · F 适应窗口\nCtrl+S 保存 PNG",
+                64, textFormat_.Get(), D2D1::RectF(48, kToolbarHeight + 32, 760, 280), brush_.Get());
         }
         const HRESULT result = renderTarget_->EndDraw();
         if (result == D2DERR_RECREATE_TARGET) {
@@ -225,7 +450,16 @@ private:
         dialog.nMaxFile = MAX_PATH;
         dialog.lpstrDefExt = L"png";
         dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-        if (GetSaveFileNameW(&dialog)) writePng(path);
+        if (GetSaveFileNameW(&dialog) && writePng(path)) currentPath_ = path;
+    }
+
+    void saveCurrent() {
+        if (!imageLoaded_) return;
+        if (currentPath_.empty()) {
+            saveImage();
+        } else {
+            writePng(currentPath_.c_str());
+        }
     }
 
     bool loadImage(const wchar_t *path) {
@@ -254,7 +488,9 @@ private:
 
         imageWidth_ = width;
         imageHeight_ = height;
+        currentPath_ = path;
         imageLoaded_ = true;
+        resetHistory();
         resetView();
         updateBitmap();
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -301,13 +537,13 @@ private:
         RECT client{};
         GetClientRect(hwnd_, &client);
         const float clientWidth = static_cast<float>(client.right - client.left);
-        const float clientHeight = static_cast<float>(client.bottom - client.top);
+        const float clientHeight = std::max(1.0f, static_cast<float>(client.bottom - client.top - kToolbarHeight));
         const float fit = std::min(clientWidth / std::max(1u, imageWidth_),
                                    clientHeight / std::max(1u, imageHeight_));
         zoom_ = std::clamp(fit, 0.05f, 1.0f);
         origin_ = D2D1::Point2F(
             (clientWidth - imageWidth_ * zoom_) / 2.0f,
-            (clientHeight - imageHeight_ * zoom_) / 2.0f);
+            kToolbarHeight + (clientHeight - imageHeight_ * zoom_) / 2.0f);
     }
 
     void zoomAt(POINT cursor, float factor) {
@@ -321,18 +557,23 @@ private:
     }
 
     void paintBrush(POINT point) {
-        if (!imageLoaded_ || point.x < origin_.x || point.y < origin_.y) return;
+        if (!imageLoaded_ || point.x < origin_.x || point.y < origin_.y ||
+            point.x >= origin_.x + imageWidth_ * zoom_ || point.y >= origin_.y + imageHeight_ * zoom_) return;
         const int centerX = static_cast<int>((point.x - origin_.x) / zoom_);
         const int centerY = static_cast<int>((point.y - origin_.y) / zoom_);
-        const int radius = std::max(1, static_cast<int>(12.0f / zoom_));
+        const int radius = std::max(1, static_cast<int>(brushRadius_ / zoom_));
         for (int y = std::max(0, centerY - radius); y <= std::min<int>(imageHeight_ - 1, centerY + radius); ++y) {
             for (int x = std::max(0, centerX - radius); x <= std::min<int>(imageWidth_ - 1, centerX + radius); ++x) {
                 const int dx = x - centerX;
                 const int dy = y - centerY;
                 if (dx * dx + dy * dy > radius * radius) continue;
                 auto *pixel = pixels_.data() + static_cast<size_t>(y) * imageWidth_ * 4 + static_cast<size_t>(x) * 4;
-                pixel[0] = pixel[1] = pixel[2] = 0;
-                pixel[3] = 255;
+                if (tool_ == Tool::Eraser) {
+                    pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0;
+                } else {
+                    pixel[0] = pixel[1] = pixel[2] = 0;
+                    pixel[3] = 255;
+                }
             }
         }
         updateBitmap();
@@ -352,6 +593,9 @@ private:
     ComPtr<ID2D1Factory> d2dFactory_;
     ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     ComPtr<ID2D1SolidColorBrush> brush_;
+    ComPtr<ID2D1SolidColorBrush> toolbarBrush_;
+    ComPtr<ID2D1SolidColorBrush> accentBrush_;
+    ComPtr<ID2D1SolidColorBrush> mutedBrush_;
     ComPtr<ID2D1Bitmap> bitmap_;
     ComPtr<IDWriteFactory> dwriteFactory_;
     ComPtr<IDWriteTextFormat> textFormat_;
@@ -360,6 +604,11 @@ private:
     UINT imageWidth_ = 0;
     UINT imageHeight_ = 0;
     bool imageLoaded_ = false;
+    std::wstring currentPath_;
+    std::vector<std::vector<uint8_t>> history_;
+    size_t historyIndex_ = 0;
+    Tool tool_ = Tool::Brush;
+    float brushRadius_ = 12.0f;
     float zoom_ = 1.0f;
     D2D1_POINT_2F origin_{0, 0};
     POINT lastMouse_{0, 0};

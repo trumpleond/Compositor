@@ -8,7 +8,10 @@
 - Direct2D GPU 绘制
 - WIC 图片解码
 - 打开 PNG/JPEG/BMP/TIFF
-- 鼠标左键黑色画笔
+- 拖拽图片打开、保存当前文件和另存为 PNG
+- 鼠标左键画笔和橡皮擦，支持 `B` / `E` 切换和 `[` / `]` 调整笔刷大小
+- 撤销/重做（Ctrl+Z / Ctrl+Y）
+- 灰度、反相、曝光和 Bayer 抖动基础图像处理
 - 滚轮缩放、F 键适应窗口
 - Ctrl+O 打开，Ctrl+S 保存 PNG
 - CMake 构建现有 C 图像处理核心
