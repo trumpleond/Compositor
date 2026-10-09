@@ -129,8 +129,10 @@ int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, cons
 
     float gamma = exp2f(p->density * 1.5f);
     float contrast = p->contrast >= 0 ? 1.0f / (1.0f - 0.95f * p->contrast) : 1.0f + p->contrast;
+    int rowCount = (int)height;
+    int y;
     #pragma omp parallel for if(height > 64)
-    for (int y = 0; y < (int)height; ++y) {
+    for (y = 0; y < rowCount; ++y) {
             const uint8_t *row = rgba + (size_t)y * stride;
             for (size_t x = 0; x < width; ++x) {
                 const uint8_t *px = row + x * 4;
@@ -348,8 +350,10 @@ void dither_dots(uint8_t *rgba, size_t width, size_t height, size_t stride, int 
 }
 
 void dither_glow(uint8_t *rgba, const uint8_t *glow, size_t width, size_t height, size_t stride, float amount) {
+    int rowCount = (int)height;
+    int y;
     #pragma omp parallel for if(height > 64)
-    for (int y = 0; y < (int)height; ++y) {
+    for (y = 0; y < rowCount; ++y) {
             uint8_t *row = rgba + (size_t)y * stride;
             const uint8_t *light = glow + (size_t)y * stride;
             for (size_t x = 0; x < width * 4; x += 4) {
@@ -370,8 +374,10 @@ static inline float hash_noise(size_t x, size_t y, uint32_t draw) {
 }
 
 void dither_quantize16(const uint16_t *wide, uint8_t *rgba, size_t width, size_t height, size_t stride) {
+    int rowCount = (int)height;
+    int y;
     #pragma omp parallel for if(height > 64)
-    for (int y = 0; y < (int)height; ++y) {
+    for (y = 0; y < rowCount; ++y) {
             uint8_t *out = rgba + (size_t)y * stride;
             const uint16_t *in = wide + (size_t)y * width * 4;
             for (size_t x = 0; x < width; ++x) {
