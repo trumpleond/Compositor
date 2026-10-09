@@ -608,7 +608,7 @@ private:
     std::vector<std::vector<uint8_t>> history_;
     size_t historyIndex_ = 0;
     Tool tool_ = Tool::Brush;
-    float brushRadius_ = 12.0f;
+    int brushRadius_ = 12;
     float zoom_ = 1.0f;
     D2D1_POINT_2F origin_{0, 0};
     POINT lastMouse_{0, 0};
