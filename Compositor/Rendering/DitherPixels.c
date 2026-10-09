@@ -1,18 +1,11 @@
 #include "DitherPixels.h"
 #include <math.h>
 #include <stdlib.h>
-#include <dispatch/dispatch.h>
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 static inline float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
-
-// Runs `body` over `count` items split into a few runs per core, each a (start, end) range, all at once.
-static void in_bands(size_t count, void (^body)(size_t start, size_t end)) {
-    size_t bands = count < 64 ? 1 : 32, size = (count + bands - 1) / bands;
-    dispatch_apply(bands, DISPATCH_APPLY_AUTO, ^(size_t band) {
-        size_t start = band * size, end = start + size < count ? start + size : count;
-        if (start < end) body(start, end);
-    });
-}
 
 // Density darkens (positive) or lightens as a gamma, so black and white stay put; contrast pivots on mid gray.
 static inline float adjust_tone(float v, float gamma, float contrast) {
@@ -136,8 +129,8 @@ int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, cons
 
     float gamma = exp2f(p->density * 1.5f);
     float contrast = p->contrast >= 0 ? 1.0f / (1.0f - 0.95f * p->contrast) : 1.0f + p->contrast;
-    in_bands(height, ^(size_t first, size_t last) {
-        for (size_t y = first; y < last; ++y) {
+    #pragma omp parallel for if(height > 64)
+    for (size_t y = 0; y < height; ++y) {
             const uint8_t *row = rgba + y * stride;
             for (size_t x = 0; x < width; ++x) {
                 const uint8_t *px = row + x * 4;
@@ -157,8 +150,7 @@ int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, cons
                     tone[at] = adjust_tone(0.2126f * r + 0.7152f * g + 0.0722f * b, gamma, contrast);
                 }
             }
-        }
-    });
+    }
 
     float dark[3] = { p->dark[0] / 255.0f, p->dark[1] / 255.0f, p->dark[2] / 255.0f };
     float light[3] = { p->light[0] / 255.0f, p->light[1] / 255.0f, p->light[2] / 255.0f };
@@ -203,11 +195,10 @@ int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, cons
         // Each line is drawn on its own, so the lines are shared out across the cores.
         size_t lines = (height + spacing - 1) / spacing;
         const float *screen = dark, *phosphor = light;
-        __block int failed = 0;
-        in_bands(lines, ^(size_t firstLine, size_t lastLine) {
+        int failed = 0;
+        for (size_t line = 0; line < lines; ++line) {
             float *scan = malloc(width * sizeof(float) * (size_t)planes);
-            if (!scan) { failed = 1; return; }
-            for (size_t line = firstLine; line < lastLine; ++line) {
+            if (!scan) { failed = 1; break; }
                 size_t top = line * spacing;
                 size_t bottom = top + spacing < height ? top + spacing : height;
                 // Wobble: each line is pushed sideways, a slow wave down the screen with a quicker one over it, as a
@@ -258,9 +249,8 @@ int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, cons
                         write_pixel(row + x * 4, br + (r - br) * cover, bg + (g - bg) * cover, bb + (b - bb) * cover);
                     }
                 }
-            }
             free(scan);
-        });
+        }
         if (failed) { free(tone); free(alpha); free(source); return 0; }
     } else {
         // Marks (halftone shapes, patterns, glyphs) cover as much of each spot as the tone calls for. On light, they
@@ -358,8 +348,8 @@ void dither_dots(uint8_t *rgba, size_t width, size_t height, size_t stride, int 
 }
 
 void dither_glow(uint8_t *rgba, const uint8_t *glow, size_t width, size_t height, size_t stride, float amount) {
-    in_bands(height, ^(size_t first, size_t last) {
-        for (size_t y = first; y < last; ++y) {
+    #pragma omp parallel for if(height > 64)
+    for (size_t y = 0; y < height; ++y) {
             uint8_t *row = rgba + y * stride;
             const uint8_t *light = glow + y * stride;
             for (size_t x = 0; x < width * 4; x += 4) {
@@ -369,8 +359,7 @@ void dither_glow(uint8_t *rgba, const uint8_t *glow, size_t width, size_t height
                     row[x + c] = (uint8_t)lroundf(v > a ? a : v);
                 }
             }
-        }
-    });
+    }
 }
 
 // A fixed pseudo-random value in [0, 1) for each pixel and draw.
@@ -381,8 +370,8 @@ static inline float hash_noise(size_t x, size_t y, uint32_t draw) {
 }
 
 void dither_quantize16(const uint16_t *wide, uint8_t *rgba, size_t width, size_t height, size_t stride) {
-    in_bands(height, ^(size_t first, size_t last) {
-        for (size_t y = first; y < last; ++y) {
+    #pragma omp parallel for if(height > 64)
+    for (size_t y = 0; y < height; ++y) {
             uint8_t *out = rgba + y * stride;
             const uint16_t *in = wide + y * width * 4;
             for (size_t x = 0; x < width; ++x) {
@@ -397,6 +386,5 @@ void dither_quantize16(const uint16_t *wide, uint8_t *rgba, size_t width, size_t
                 }
                 out[x * 4 + 3] = (uint8_t)alpha;
             }
-        }
-    });
+    }
 }
