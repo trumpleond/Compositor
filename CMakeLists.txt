@@ -51,3 +51,25 @@ if(BUILD_TESTING)
     target_link_libraries(compositor_pixel_core_smoke PRIVATE compositor_pixel_core)
     add_test(NAME compositor_pixel_core_smoke COMMAND compositor_pixel_core_smoke)
 endif()
+
+if(WIN32)
+    enable_language(CXX)
+
+    add_executable(CompositorWindows WIN32
+        windows/CompositorWinMain.cpp
+    )
+    target_compile_features(CompositorWindows PRIVATE cxx_std_17)
+    target_compile_definitions(CompositorWindows PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(CompositorWindows PRIVATE
+        compositor_pixel_core
+        comdlg32
+        d2d1
+        dwrite
+        ole32
+        windowscodecs
+    )
+    if(MSVC)
+        target_compile_options(CompositorWindows PRIVATE /W4 /O2)
+    endif()
+    set_target_properties(CompositorWindows PROPERTIES OUTPUT_NAME "Compositor")
+endif()

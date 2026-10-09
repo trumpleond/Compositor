@@ -1,17 +1,21 @@
-# Windows port
+# Windows 版
 
-The Windows build is intentionally kept in this repository. The existing Xcode target remains the macOS build; the Windows entry point is CMake.
+这个仓库的当前主线以 Windows 版本为目标。macOS 的 Xcode 工程不再是 Windows 构建入口。
 
-## Current status
+## 当前功能
 
-- `compositor_pixel_core` builds the image-processing C code without Apple frameworks.
-- The C core no longer requires Apple Blocks or `dispatch/dispatch.h` in the dither implementation.
-- OpenMP is used when the toolchain provides it. Without OpenMP, the same code uses a serial fallback.
-- `compositor_pixel_core_smoke` covers the first cross-platform build boundary.
+- 原生 Win32 窗口
+- Direct2D GPU 绘制
+- WIC 图片解码
+- 打开 PNG/JPEG/BMP/TIFF
+- 鼠标左键黑色画笔
+- 滚轮缩放、F 键适应窗口
+- Ctrl+O 打开，Ctrl+S 保存 PNG
+- CMake 构建现有 C 图像处理核心
 
-## Build on Windows
+## Windows 构建
 
-From a Developer PowerShell prompt:
+安装 Visual Studio 2022 的“使用 C++ 的桌面开发”工作负载后，在 Developer PowerShell 中执行：
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -19,4 +23,4 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-This first target is deliberately separate from the GUI. SwiftUI, AppKit and Metal are macOS-only, so the Windows application layer will be added on top of this core rather than trying to make the Xcode target compile under Windows.
+程序位于 `build/Release/Compositor.exe`。
